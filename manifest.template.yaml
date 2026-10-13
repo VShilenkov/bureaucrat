@@ -1,0 +1,104 @@
+# Copy this file as manifest.yaml in a process folder, then replace the
+# context values and example paths with the values for that document package.
+
+context:
+  person: "YOUR_NAME"
+  process_id: "PROCESS_NAME"
+  target_date: "YYYYMMDD"
+
+# These three names are supplied by the application and override any values
+# with the same names here. You may add your own environment variables.
+#   root: application/project root
+#   source: current working directory when the application is started
+#   formulars: <root>/Formulars
+# environment:
+#   archive: "{environment.root}/Archive"
+
+header: |
+  Document package for {context.person}
+
+instructions: |
+  Add instructions for preparing this package.
+
+description: |
+  Describe the purpose of this package.
+
+footer: |
+  Package: {context.process_id} / {context.target_date}
+
+tasks:
+  # FormTask checks the template source (if supplied; relative paths are
+  # relative to the current working directory) and searches the output folder
+  # for filled_pattern. It does not fill the form.
+  - type: form
+    name: "Example form"
+    source: "{environment.formulars}/Organization/Form.Template.pdf"
+    filled_pattern: "Organization.FILL.{context.person}.{context.target_date}.pdf"
+    on_missing: "Missing filled form {task.number}: {task.name}"
+    optional: false
+
+  # Copy one file. Relative path values are resolved from the process current
+  # working directory, not from this manifest or the output folder.
+  - type: copy
+    name: "Copy one existing document"
+    path: "input/Existing.Document.pdf"
+    on_missing: "Missing document for {context.person}"
+    optional: false
+
+  # To copy several files instead, use paths (a non-empty list) and remove
+  # path from this task. Each file is copied to the output folder by basename.
+  # - type: copy
+  #   name: "Copy several existing documents"
+  #   paths:
+  #     - "{environment.root}/{context.person}/ID/Passport.pdf"
+  #     - "{environment.source}/input/Proof.Of.Address.pdf"
+  #   optional: false
+
+  # Convert one image into a PDF. Relative input paths are resolved from the
+  # process current working directory. The PDF is written to the output folder.
+  - type: image_to_pdf
+    name: "Convert one image"
+    path: "{environment.root}/{context.person}/Documents/Scan.jpg"
+    on_missing: "Missing image for {context.person}"
+    optional: false
+
+  # To convert several images instead, use paths (a non-empty list) and remove
+  # path from this task. Each image becomes its own PDF; they are not combined.
+  # - type: image_to_pdf
+  #   name: "Convert several images"
+  #   paths:
+  #     - "{environment.root}/{context.person}/Documents/Page.01.jpg"
+  #     - "{environment.root}/{context.person}/Documents/Page.02.jpg"
+  #   optional: false
+
+  # Merge PDFs into one PDF. Relative inputs are resolved from the output
+  # folder, which is <manifest directory>/<context.target_date>.
+  - type: pdf_merge
+    name: "Assemble package"
+    inputs:
+      - "Existing.Document.pdf"
+      - "Scan.pdf"
+    output: "Organization.PACK.{context.person}.{context.target_date}.pdf"
+
+  # A placeholder task: it logs the name and performs no file operation.
+  - type: skip
+    name: "Optional document not included"
+
+# Path rules:
+# - form.source, copy.path/paths, and image_to_pdf.path/paths accept absolute
+#   paths or relative paths. Relative paths are resolved from the current
+#   working directory; use {environment.root} or {environment.source} when
+#   you want to anchor a path explicitly. form.filled_pattern is searched for
+#   inside the output folder (it is a filename pattern, not a source path).
+# - copy and image_to_pdf require exactly one of path (one string) or paths
+#   (a non-empty list of strings). Each image becomes a separate PDF.
+# - pdf_merge inputs must be a list; relative inputs are relative to the output
+#   folder, and absolute inputs are accepted. Its output must be a file directly
+#   inside the output folder; a relative output is interpreted there.
+# - The output folder is the manifest's directory / context.target_date.
+# - Environment variables: root, source, formulars, plus any custom entries
+#   defined under environment. Context variables are the keys under context.
+# - Each task gets task.number (generated as 01, 02, ...) and its own fields,
+#   such as task.name. These can be used in strings in that task, e.g. in
+#   on_missing. String values throughout the manifest support {group.key}
+#   substitutions.
