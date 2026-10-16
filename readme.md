@@ -11,6 +11,13 @@ the process current working directory. Relative `pdf_merge.inputs` and
 `pdf_merge.output` are instead resolved from the output folder. See the
 template comments for absolute paths, environment, context, and task variables.
 
+During `check`, a missing path input (or a `form.filled_pattern` match) is
+reported as `[OK-GENERATED]` when an earlier `copy`, `image_to_pdf`, or
+`pdf_merge` task in the manifest is expected to produce that path. This follows
+manifest order, which is also the order used by `build`; a task's outputs count
+only when its own inputs are present or generated earlier in the chain.
+Unmatched or ambiguous planned outputs remain missing.
+
 ## Building a Windows executable
 
 Build on Windows using the same Python architecture (32-bit or 64-bit) as the
@@ -33,18 +40,20 @@ runtime. Place the executable bundle in each document tree alongside that
 tree's own `Formulars` directory. Build a console executable:
 
 ```powershell
-python -m PyInstaller --clean --noconfirm --onedir --console --name bureaucrat `
+python -m PyInstaller --clean --noconfirm --onefile --console --name bureaucrat `
   --collect-all fitz `
   .\bureaucrat.py
 ```
 
-The distributable is `dist\bureaucrat\`. Keep the generated contents together;
-the executable depends on files in that directory. Test it from a process
-folder containing the manifest and input files, so relative manifest paths
-resolve as expected:
+The distributable is the single `dist\bureaucrat.exe` file. PyInstaller
+bundles the Python runtime and dependencies into the executable and extracts
+them to a temporary directory when it runs. Place the required `Formulars`
+directory beside the executable; it remains external document-tree data.
+Test the executable from a process folder containing the manifest and input
+files, so relative manifest paths resolve as expected:
 
 ```powershell
-& "C:\path\to\dist\bureaucrat\bureaucrat.exe" `
+& ".\dist\bureaucrat.exe" `
   --manifest .\manifest.yaml --command check
 ```
 

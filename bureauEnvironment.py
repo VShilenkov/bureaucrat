@@ -5,6 +5,8 @@ class Environment(object):
     __LOG_PREFIX="Environment:"
 
     def __init__(self, config):
+        # In a PyInstaller build, __file__ points inside the extracted bundle;
+        # use the executable's directory so each document tree can supply its own Formulars.
         if getattr(sys, "frozen", False):
             self.root = pathlib.Path(sys.executable).parent
         else:

@@ -33,6 +33,7 @@ class BureauExecutor(object):
         return_code = 0
         context = self.manifest.context
         output = self.manifest.path.parent / str(context["target_date"])
+        generated_outputs = {}
 
         for definition in self.manifest.tasks:
             task_type = definition["type"]
@@ -47,6 +48,7 @@ class BureauExecutor(object):
                 dry_run,
                 output,
             )
+            task._generated_inputs = generated_outputs.copy()
             log.debug(
                 "%s created task %s %s for command %s (dry_run=%s)",
                 self.__LOG_PREFIX,
@@ -55,6 +57,14 @@ class BureauExecutor(object):
                 command,
                 dry_run,
             )
+
+            if command == "check":
+                for path in task._planned_outputs():
+                    key = task._path_key(path)
+                    if key in generated_outputs:
+                        generated_outputs[key] = (path, None)
+                    else:
+                        generated_outputs[key] = (path, task.number)
 
             if task.execute():
                 return_code = 1

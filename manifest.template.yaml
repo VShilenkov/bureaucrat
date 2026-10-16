@@ -73,6 +73,9 @@ tasks:
 
   # Merge PDFs into one PDF. Relative inputs are resolved from the output
   # folder, which is <manifest directory>/<context.target_date>.
+  # check accepts inputs planned by earlier copy, image_to_pdf, or pdf_merge
+  # tasks as [OK-GENERATED], even before the files exist on disk, if that
+  # task's own inputs are available.
   - type: pdf_merge
     name: "Assemble package"
     inputs:

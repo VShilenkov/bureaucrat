@@ -1,3 +1,4 @@
+import fnmatch
 import logging
 import re
 import shutil
@@ -19,6 +20,7 @@ class BureauTask(object):
         self.command = command
         self.dry_run = dry_run and command in self.DRY_RUN_COMMANDS
         self.output = output
+        self._generated_inputs = {}
 
     def _log(self, level, message, *args):
         marker = " [DRY-RUN]" if self.dry_run else ""
@@ -43,6 +45,7 @@ class BureauTask(object):
 
     def _display_message(self, value):
         message = str(value)
+        # Replace absolute task paths and the application root to keep logs portable.
         for task_value in self.definition.values():
             if not isinstance(task_value, str):
                 continue
@@ -76,7 +79,41 @@ class BureauTask(object):
             raise ValueError("Task paths must contain only path strings")
         return [Path(value) for value in values]
 
+    def _planned_outputs(self):
+        return []
+
+    def _path_key(self, path):
+        return str(Path(path).resolve()).casefold()
+
+    def _generated_input_producer(self, path):
+        generated = self._generated_inputs.get(self._path_key(path))
+        return generated[1] if generated is not None else None
+
+    def _inputs_available(self, paths):
+        return all(
+            path.is_file()
+            or self._generated_input_producer(path) is not None
+            for path in paths
+        )
+
+    def _check_input_status(self, path, missing_message):
+        if path.is_file():
+            self.info("[OK] %s", self._display_path(path))
+            return
+
+        producer = self._generated_input_producer(path)
+        if producer is not None:
+            self.info(
+                "[OK-GENERATED] %s (task %s)",
+                self._display_path(path),
+                producer,
+            )
+            return
+
+        self.warning("[MISSING] %s", self._display_message(missing_message))
+
     def _check_destinations(self, destinations):
+        # Windows treats filenames case-insensitively, so detect collisions that way.
         normalized = [str(path.resolve()).casefold() for path in destinations]
         if len(normalized) != len(set(normalized)):
             self.error("multiple inputs map to the same output filename")
@@ -108,6 +145,7 @@ class BureauTask(object):
             )
             return 1
 
+        # Unlink symlinks themselves rather than following them to their targets.
         if self.dry_run:
             self.info("[CLEAN] %s", self._display_path(destination),
             )
@@ -139,6 +177,19 @@ class BureauTask(object):
 class FormTask(BureauTask):
     LOG_PREFIX = "FormTask:"
 
+    def _generated_filled_forms(self, filename):
+        output = self.output.resolve()
+        return [
+            (path, producer)
+            for path, producer in self._generated_inputs.values()
+            if producer is not None
+            and path.resolve().parent == output
+            and fnmatch.fnmatchcase(
+                path.name.casefold(),
+                filename.casefold(),
+            )
+        ]
+
     def clean(self) -> int:
         self.info("[KEEP] filled forms are existing inputs")
         return 0
@@ -147,6 +198,7 @@ class FormTask(BureauTask):
         filename = self.definition["filled_pattern"]
         search_root = root or self.environment.root
         output = self.output.resolve()
+        # A pattern must identify exactly one completed form; ambiguity is not safe to guess.
         matches = [
             path for path in search_root.rglob(filename)
             if path.is_file()
@@ -175,6 +227,11 @@ class FormTask(BureauTask):
             template_path = Path(template)
             if template_path.is_file():
                 self.info("[OK] form template %s", self._display_path(template_path))
+            elif self._generated_input_producer(template_path) is not None:
+                self._check_input_status(
+                    template_path,
+                    f"Missing form template {self._display_path(template_path)}",
+                )
             elif optional:
                 self.info("[OPTIONAL] form template not found: %s", self._display_path(template_path))
             else:
@@ -196,7 +253,26 @@ class FormTask(BureauTask):
             return 0
 
         if source is None:
-            if missing and optional:
+            generated_forms = self._generated_filled_forms(
+                self.definition["filled_pattern"],
+            )
+            if len(generated_forms) == 1:
+                path, producer = generated_forms[0]
+                self.info(
+                    "[OK-GENERATED] filled form %s (task %s)",
+                    self._display_path(path),
+                    producer,
+                )
+            elif len(generated_forms) > 1:
+                self.warning(
+                    "[AMBIGUOUS] filled form in %s: %s",
+                    self._display_path(self.output),
+                    ", ".join(
+                        self._display_path(path)
+                        for path, _ in generated_forms
+                    ),
+                )
+            elif missing and optional:
                 self.info("[OPTIONAL] filled form not found in %s", self._display_path(self.output))
             elif missing:
                 self.warning("[MISSING] filled form in %s: %s", self._display_path(self.output), self._display_message(error))
@@ -237,12 +313,18 @@ class CopyTask(BureauTask):
 
     def check(self) -> int:
         for source in self._input_paths():
-            if source.is_file():
-                self.info("[OK] %s", self._display_path(source))
-            else:
-                message = self.definition.get("on_missing", f"Missing file: {self._display_path(source)}")
-                self.warning("[MISSING] %s", self._display_message(message))
+            message = self.definition.get(
+                "on_missing",
+                f"Missing file: {self._display_path(source)}",
+            )
+            self._check_input_status(source, message)
         return 0
+
+    def _planned_outputs(self):
+        sources = self._input_paths()
+        if not self._inputs_available(sources):
+            return []
+        return [self.output / source.name for source in sources]
 
     def build(self) -> int:
         sources = self._input_paths()
@@ -271,6 +353,7 @@ class CopyTask(BureauTask):
         try:
             self.output.mkdir(parents=True, exist_ok=True)
             for source, destination in zip(sources, destinations):
+                # Track before copying so a partially written file is also rolled back.
                 attempted.append(destination)
                 shutil.copy2(source, destination)
         except OSError as error:
@@ -296,12 +379,18 @@ class ImageToPdfTask(BureauTask):
 
     def check(self) -> int:
         for source in self._input_paths():
-            if source.is_file():
-                self.info("[OK] %s", self._display_path(source))
-            else:
-                message = self.definition.get("on_missing", f"Missing image: {self._display_path(source)}")
-                self.warning("[MISSING] %s", self._display_message(message))
+            message = self.definition.get(
+                "on_missing",
+                f"Missing image: {self._display_path(source)}",
+            )
+            self._check_input_status(source, message)
         return 0
+
+    def _planned_outputs(self):
+        sources = self._input_paths()
+        if not self._inputs_available(sources):
+            return []
+        return [self.output / f"{source.stem}.pdf" for source in sources]
 
     def build(self) -> int:
         sources = self._input_paths()
@@ -334,9 +423,11 @@ class ImageToPdfTask(BureauTask):
             for source, destination in zip(sources, destinations):
                 attempted.append(destination)
                 with Image.open(source) as image:
+                    # Honor camera orientation metadata before converting to PDF.
                     oriented = ImageOps.exif_transpose(image)
                     if "A" in oriented.getbands() or "transparency" in oriented.info:
                         rgba = oriented.convert("RGBA")
+                        # PDF output has no alpha channel; composite transparent pixels on white.
                         converted = Image.new("RGB", rgba.size, "white")
                         converted.paste(rgba, mask=rgba.getchannel("A"))
                         rgba.close()
@@ -368,6 +459,7 @@ class PdfMergeTask(BureauTask):
     DRY_RUN_COMMANDS = frozenset({"build", "clean"})
 
     def _inputs(self):
+        # Merge inputs are relative to the result folder, unlike copy/image inputs.
         return [
             Path(value) if Path(value).is_absolute() else self.output / value
             for value in self.definition["inputs"]
@@ -381,14 +473,45 @@ class PdfMergeTask(BureauTask):
             else self.output / output_name
         )
         if destination.resolve().parent != self.output.resolve():
+            # Prevent a manifest output path from writing outside its result folder.
             raise ValueError("PDF merge output must be a file inside the result folder")
         return destination
 
+    def _planned_outputs(self):
+        if not self._inputs_available(self._inputs()):
+            return []
+
+        output_name = self.definition.get("output")
+        if not isinstance(output_name, str):
+            return []
+
+        output_name = Path(output_name)
+        destination = (
+            output_name
+            if output_name.is_absolute()
+            else self.output / output_name
+        )
+        if destination.resolve().parent != self.output.resolve():
+            return []
+        return [destination]
+
     def check(self) -> int:
-        missing = [path for path in self._inputs() if not path.is_file()]
+        inputs = self._inputs()
+        generated = [
+            path for path in inputs
+            if not path.is_file()
+            and self._generated_input_producer(path) is not None
+        ]
+        missing = [
+            path for path in inputs
+            if not path.is_file()
+            and self._generated_input_producer(path) is None
+        ]
+        for path in generated:
+            self._check_input_status(path, "")
         if missing:
             self.warning("[MISSING] merge inputs: %s", ", ".join(self._display_path(path) for path in missing))
-        else:
+        elif not generated:
             self.info("[OK] %s PDF inputs", len(self.definition["inputs"]))
         return 0
 

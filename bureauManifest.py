@@ -13,6 +13,7 @@ def resolve(value, variables):
     if not isinstance(value, str):
         return value
 
+    # Resolve nested references recursively and track the chain to report cycles.
     def resolve_expression(expression, references):
         if _VARIABLE_EXPRESSION.fullmatch(expression) is None:
             raise ValueError(f"Invalid variable expression: {{{expression}}}")
@@ -67,6 +68,7 @@ class BureauManifest(object):
             "environment": self.environment,
         }
 
+        # Application-provided environment paths take precedence over manifest values.
         self.data["environment"] = self.environment
         self.data = self._normalize(self.data, variables)
         self.environment = self.data["environment"]
@@ -99,6 +101,7 @@ class BureauManifest(object):
     ):
         if isinstance(value, dict):
             if task_definition:
+                # Task-local substitutions can use generated task.number and task fields.
                 value = {**value, "number": f"{task_index:02d}"}
                 variables = {**variables, "task": value}
             return {
@@ -125,6 +128,7 @@ class BureauManifest(object):
         if "tasks" in self.data:
             tasks = self._list("tasks")
         else:
+            # Accept the earlier split form/copy sections as shorthand for tasks.
             tasks = [{"type": "form", **item} for item in self._list("forms") 
                 ] + [{"type": "copy", **item} for item in self._list("copy") ]
 
